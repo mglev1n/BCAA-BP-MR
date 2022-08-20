@@ -1,0 +1,684 @@
+---
+title: "Circulating Branch-Chain Amino Acids and Blood Pressure: A Mendelian Randomization Study"
+author: Michael Levin, MD
+format:
+  html:
+    code-tools: true
+    code-fold: true
+    toc: true
+    toc-depth: 6
+    self-contained: true
+    citations-hover: true
+cap-location: top
+execute:
+  warning: false
+  message: false
+  echo: true
+  cache: true
+csl: https://raw.githubusercontent.com/citation-style-language/styles/6152ccea8b7d7a472910d36524d1bf3557a83bfc/dependent/nature-genetics.csl
+bibliography: references.bib
+---
+
+```{r setup}
+#| include: false
+
+# install any required packages from the renv.lock file
+if (!requireNamespace("renv", quietly = TRUE)) install.packages("renv")
+    renv::restore()
+
+library(tidyverse)
+library(TwoSampleMR)
+library(data.table)
+library(glue)
+library(arrow)
+library(vroom)
+library(forestplotR)
+library(gt)
+library(furrr)
+library(patchwork)
+
+theme_set(theme_bw(base_size = 12) + theme(axis.text = element_text(color = "black")))
+```
+
+# Mendelian Randomization
+
+## Exposures
+
+-   Isoleucine, Leucine, Valine - Kettunen et. al.[@kettunen2016]
+
+-   UK Biobank - Isoleucine, Leucine, Valine, Total concentration of BCAA; Metabolites were transformed using rank-based inverse normal transformation prior to analyses. Association analyses were adjusted by sex, array and fasting time. BOLT-LMM (linear mixed model) was used to account for both relatedness and population stratification
+
+## Outcomes
+
+-   UK Biobank [(https://pan.ukbb.broadinstitute.org/)](https://pan.ukbb.broadinstitute.org/) - Systolic BP (SBP), Diastolic BP (DBP), Pulse Pressure (PP), Mean Arterial Pressure (MAP)
+
+-   International Consortium on Blood Pressure (ICBP) + UK Biobank[@evangelou2018] - SBP, DBP
+
+## Methods
+
+For the primary analysis, genetic variants associated with BCAA (isoleuceine, leucine, and valine) were identified from NMR metabolomics analysis from Kettunen et. al.[@kettunen2016]. Inverse variance-weighted (or Wald-ratio MR if only 1 SNP available) MR was performed to test the association between circulating BCAA and SBP, DBP, MAP, and PP assessed among transancestry participants of UK Biobank. Multiple sensitivity analyses were performed. First, weighted-median and weighted-mode MR were performed, which make different assumptions about the presence of pleiotropy and invalid genetic instruments. In a second sensitivity analysis genetic instruments for BCAA were derived among \~115k participants of UKB. Associations between BCAA and BP traits were assessed using SBP and DBP GWAS from the ICBP+UKB meta-analysis (including only individuals of European ancestry).
+
+```{bash, include=FALSE}
+
+# Download blood pressure summary statistics from Pan-UK Biobank
+curl -C - -o "Data/continuous-DBP-both_sexes-combined_medadj_raw.tsv.bgz" "https://pan-ukb-us-east-1.s3.amazonaws.com/sumstats_flat_files/continuous-DBP-both_sexes-combined_medadj_raw.tsv.bgz" 
+
+curl -C - -o "Data/continuous-SBP-both_sexes-combined_medadj_raw.tsv.bgz" "https://pan-ukb-us-east-1.s3.amazonaws.com/sumstats_flat_files/continuous-SBP-both_sexes-combined_medadj_raw.tsv.bgz"
+
+curl -C - -o "Data/continuous-MAP-both_sexes-combined_medadj_raw.tsv.bgz" "https://pan-ukb-us-east-1.s3.amazonaws.com/sumstats_flat_files/continuous-MAP-both_sexes-combined_medadj_raw.tsv.bgz"
+
+curl -C - -o "Data/continuous-PP-both_sexes-combined_medadj_raw.tsv.bgz" "https://pan-ukb-us-east-1.s3.amazonaws.com/sumstats_flat_files/continuous-PP-both_sexes-combined_medadj_raw.tsv.bgz"
+```
+
+
+```{r}
+# Extract BCAA MR exposures
+mr_exposures <- available_outcomes()
+
+bcaa_exposure <- extract_instruments(outcomes = c("met-d-Ile", "met-d-Leu", "met-d-Val", "met-d-Total_BCAA", "met-c-873", "met-c-897", "met-c-940"))
+
+# Extract BP MR outcomes 
+dbp_outcome <- vroom("Data/continuous-DBP-both_sexes-combined_medadj_raw.tsv.bgz", col_select = c("chr", "pos", "ref", "alt", "af_meta", "beta_meta", "se_meta", "pval_meta")) %>%
+  filter(pos %in% bcaa_exposure$pos.exposure) %>%
+  right_join(bcaa_exposure %>%
+    select(chr = chr.exposure, pos = pos.exposure, SNP) %>%
+    unique()) %>%
+  mutate(Phenotype = "DBP") %>%
+  format_data(
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta_meta",
+    se_col = "se_meta",
+    eaf = "af_meta",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    chr_col = "chr",
+    pos_col = "pos"
+  )
+  
+sbp_outcome <- vroom("Data/continuous-SBP-both_sexes-combined_medadj_raw.tsv.bgz", col_select = c("chr", "pos", "ref", "alt", "af_meta", "beta_meta", "se_meta", "pval_meta")) %>%
+  filter(pos %in% bcaa_exposure$pos.exposure) %>%
+  right_join(bcaa_exposure %>%
+    select(chr = chr.exposure, pos = pos.exposure, SNP) %>%
+    unique()) %>%
+  mutate(Phenotype = "SBP") %>%
+  format_data(
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta_meta",
+    se_col = "se_meta",
+    eaf = "af_meta",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    chr_col = "chr",
+    pos_col = "pos"
+  )
+
+map_outcome <- vroom("Data/continuous-MAP-both_sexes-combined_medadj_raw.tsv.bgz", col_select = c("chr", "pos", "ref", "alt", "af_meta", "beta_meta", "se_meta", "pval_meta")) %>%
+  filter(pos %in% bcaa_exposure$pos.exposure) %>%
+  right_join(bcaa_exposure %>%
+    select(chr = chr.exposure, pos = pos.exposure, SNP) %>%
+    unique()) %>%
+  mutate(Phenotype = "MAP") %>%
+  format_data(
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta_meta",
+    se_col = "se_meta",
+    eaf = "af_meta",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    chr_col = "chr",
+    pos_col = "pos"
+  )
+
+pp_outcome <- vroom("Data/continuous-PP-both_sexes-combined_medadj_raw.tsv.bgz", col_select = c("chr", "pos", "ref", "alt", "af_meta", "beta_meta", "se_meta", "pval_meta")) %>%
+  filter(pos %in% bcaa_exposure$pos.exposure) %>%
+  right_join(bcaa_exposure %>%
+    select(chr = chr.exposure, pos = pos.exposure, SNP) %>%
+    unique()) %>%
+  mutate(Phenotype = "PP") %>%
+  format_data(
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta_meta",
+    se_col = "se_meta",
+    eaf = "af_meta",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    chr_col = "chr",
+    pos_col = "pos"
+  )
+
+icbp_outcomes <- extract_outcome_data(snps = bcaa_exposure$SNP, outcomes = c("ieu-b-38", "ieu-b-39"))
+
+bp_outcomes <- bind_rows(dbp_outcome, map_outcome, sbp_outcome, pp_outcome, icbp_outcomes)
+
+# Harmonize exposure/outcome data to align effect alleles
+
+bcaa_bp_harmonized <- harmonise_data(bcaa_exposure, bp_outcomes, action = 1)
+
+# run MR
+mr_res_bcaa_bp <- mr(bcaa_bp_harmonized, method_list = c("mr_ivw", "mr_weighted_median", "mr_weighted_mode", "mr_wald_ratio")) %>%
+  generate_odds_ratios() %>%
+  left_join(mr_pleiotropy_test(bcaa_bp_harmonized), by = c("id.exposure", "id.outcome", "outcome", "exposure"), suffix = c(".mr", ".pleiotropy")) %>%
+  mutate(ci_range = glue("{round(or_lci95, 2)}-{round(or_uci95, 2)}"))
+
+mr_res_bcaa_bp_annotated <- mr_res_bcaa_bp %>%
+  mutate(exposure_source = case_when(
+    str_detect(id.exposure, "met-c") ~ "Kettunen",
+    TRUE ~ "UKB"
+  )) %>%
+  mutate(outcome_source = case_when(
+    str_detect(id.outcome, "ieu") ~ "ICBP+UKB",
+    TRUE ~ "UKB"
+  )) %>%
+  mutate(outcome = case_when(str_detect(outcome, "systolic") ~ "SBP",
+                             str_detect(outcome, "diastolic") ~ "DBP",
+                             TRUE ~ outcome)) %>%
+  split_exposure() %>%
+  split_outcome() %>%
+  mutate(exposure = case_when(
+    str_detect(exposure, "Total concentration") ~ "Total BCAA",
+    TRUE ~ exposure
+  )) %>%
+  mutate(exposure = fct_relevel(exposure, "Total BCAA", after = Inf))
+```
+
+## Results
+
+### Instrument Strength
+
+```{r}
+bcaa_bp_harmonized %>%
+  split_exposure() %>%
+  split_outcome() %>%
+  mutate(exposure_source = case_when(
+    str_detect(id.exposure, "met-c") ~ "Kettunen",
+    TRUE ~ "UKB"
+  )) %>%
+  mutate(outcome_source = case_when(
+    str_detect(id.outcome, "ieu") ~ "ICBP+UKB",
+    TRUE ~ "UKB"
+  )) %>%
+  mutate(outcome = case_when(str_detect(outcome, "systolic") ~ "SBP",
+                             str_detect(outcome, "diastolic") ~ "DBP",
+                             TRUE ~ outcome)) %>%
+  split_exposure() %>%
+  split_outcome() %>%
+  mutate(exposure = case_when(
+    str_detect(exposure, "Total concentration") ~ "Total BCAA",
+    TRUE ~ exposure
+  )) %>%
+  mutate(exposure = fct_relevel(exposure, "Total BCAA", after = Inf)) %>%
+  filter(mr_keep) %>%
+  mutate(f_statistic = beta.exposure^2/se.exposure^2) %>%
+  group_by(exposure, exposure_source, outcome, outcome_source) %>%
+  summarize(n_snp = n(), 
+            f_statistic_mean = mean(f_statistic),
+            f_statistic_range = glue("{round(min(f_statistic), 2)} - {round(max(f_statistic), 2)}"), 
+            .groups = "drop") %>%
+  gt::gt() %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  )
+```
+
+### MR Results Table
+
+```{r}
+mr_res_bcaa_bp_annotated %>%
+  # mutate(source = case_when(str_detect(exposure, "met-c") ~ "Kettunen",
+  #                           TRUE ~ "UKB"))  %>% 
+  select(exposure, exposure_source, outcome, outcome_source, method, b, se.mr, lo_ci, up_ci, pval.mr) %>%
+    DT::datatable(
+  extensions = c("Buttons"),
+  options = list(dom = "Bfrtip",
+                 buttons = c("copy", "csv")))
+```
+
+### Primary IVW Plot
+
+Genetic instruments for BCAA derived from Kettunen et. al., BP SNPs derived from UKB (transancestry)
+
+```{r fig.height=5, fig.width=18}
+mr_ivw_plot <- mr_res_bcaa_bp_annotated %>%
+  filter(str_detect(method, "variance|Wald")) %>%
+  filter(str_detect(exposure_source, "Kettunen")) %>%
+  filter(!str_detect(outcome_source, "ICBP")) %>%
+  mutate(outcome = fct_relevel(outcome, "SBP", "DBP", "MAP", "PP")) %>%
+  arrange(desc(exposure)) %>%
+  plot_forest(width_ratio = c(1, 1, 3, 2), cols_left = vars("Exposure" = exposure, "Outcome" = outcome), effect = b, effect_signif = 3, ci_signif = 3, ci_lower = lo_ci, ci_upper = up_ci, p_value = pval.mr, xmin = min(c(1,.$lo_ci)), xmax = max(c(1,.$up_ci)), style = "Beta", hline = 0, font_size = 20)
+
+mr_ivw_plot
+```
+
+### Secondary IVW Plot
+
+Genetic instruments for BCAA derived from UKB, BP SNPs derived from UKB+ICBP
+
+```{r fig.height=5, fig.width=18}
+mr_res_bcaa_bp_annotated %>%
+  filter(str_detect(method, "variance|Wald")) %>%
+  filter(str_detect(exposure_source, "UKB")) %>%
+  filter(str_detect(outcome_source, "ICBP")) %>%
+  mutate(outcome = fct_relevel(outcome, "SBP", "DBP")) %>%
+  arrange(desc(exposure)) %>%
+  plot_forest(width_ratio = c(1., 0.5, 3, 2), cols_left = vars("Exposure" = exposure, "Outcome" = outcome), effect = b, effect_signif = 3, ci_signif = 3, ci_lower = lo_ci, ci_upper = up_ci, p_value = pval.mr, xmin = min(c(1,.$lo_ci)), xmax = max(c(1,.$up_ci)), style = "Beta", hline = 0, font_size = 20)
+```
+
+### Alternate MR Methods
+
+```{r fig.height=8, fig.width=18}
+mr_res_bcaa_bp_annotated %>%
+  filter(!str_detect(method, "variance|Wald")) %>%
+  filter((str_detect(exposure_source, "UKB") & str_detect(outcome_source, "ICBP")) | (str_detect(exposure_source, "Kettunen") & !str_detect(outcome_source, "ICBP"))) %>%
+  # filter(str_detect(outcome_source, "ICBP")) %>%
+  mutate(outcome = fct_relevel(outcome, "SBP", "DBP", "MAP", "PP")) %>%
+  arrange(desc(exposure)) %>%
+  plot_forest(width_ratio = c(1, 0.5, 1, 0.5, 1, 2, 2), cols_left = vars("Exposure" = exposure, "Exposure Source" = exposure_source, "Outcome" = outcome, "Outcome Source" = outcome_source, "Method" = method), effect = b, effect_signif = 3, ci_signif = 3, ci_lower = lo_ci, ci_upper = up_ci, p_value = pval.mr, xmin = min(c(1,.$lo_ci)), xmax = max(c(1,.$up_ci)), style = "Beta", hline = 0, font_size = 20)
+```
+
+### Heterogeneity
+
+```{r}
+mr_heterogeneity(bcaa_bp_harmonized) %>%
+  DT::datatable(
+  extensions = c("Buttons"),
+  options = list(dom = "Bfrtip",
+                 buttons = c("copy", "csv")))
+```
+
+# Multivariable Mendelian Randomization
+
+## Exposures
+
+-   Isoleucine, Leucine, Valine - Kettunen et. al.[@kettunen2016]; UK Biobank metabolite GWAS
+
+-   Diabetes - Xue et. al.[@xue2018]
+
+-   BMI - Yengo et. al.[@yengo2018] (GIANT consortium)
+
+## Outcomes
+
+-   UK Biobank [(https://pan.ukbb.broadinstitute.org/)](https://pan.ukbb.broadinstitute.org/) - Systolic BP (SBP), Diastolic BP (DBP), Pulse Pressure (PP), Mean Arterial Pressure (MAP)
+
+## Methods
+
+Genetic variants associated with BCAA (isoleucine, leucine, and valine) were identified from NMR metabolomics analysis from Kettunen et. al.[@kettunen2016]. Multivariable MR was performed to test the association between circulating BCAA and SBP, DBP, MAP, and PP assessed among transancestry participants of UK Biobank, adjusted for the corresponding SNP effects on BMI or diabetes.
+
+```{r}
+mv_instruments <- crossing(bcaa = c("met-d-Ile", "met-d-Leu", "met-d-Val", "met-d-Total_BCAA", "met-c-873", "met-c-897", "met-c-940"), adjustment = c("ieu-b-40", "ebi-a-GCST006867")) %>%
+  mutate(instrument = map2(bcaa, adjustment, ~mv_extract_exposures(id_exposure = c(.x, .y))))
+
+mv_instrument_annotations <- mv_instruments %>%
+  unnest(instrument) %>%
+  distinct(SNP) %>%
+  pull(SNP) %>%
+  ieugwasr::variants_rsid()
+```
+
+
+```{r}
+dbp_outcome_mvmr <- vroom("Data/continuous-DBP-both_sexes-combined_medadj_raw.tsv.bgz", col_select = c("chr", "pos", "ref", "alt", "af_meta", "beta_meta", "se_meta", "pval_meta")) %>%
+  filter(pos %in% mv_instrument_annotations$pos) %>%
+  right_join(mv_instrument_annotations %>%
+    select(chr, pos, SNP = name) %>%
+    unique()) %>%
+  mutate(Phenotype = "DBP") %>%
+  format_data(
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta_meta",
+    se_col = "se_meta",
+    pval_col = "pval_meta",
+    eaf = "af_meta",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    chr_col = "chr",
+    pos_col = "pos"
+  )
+  
+sbp_outcome_mvmr <- vroom("Data/continuous-SBP-both_sexes-combined_medadj_raw.tsv.bgz", col_select = c("chr", "pos", "ref", "alt", "af_meta", "beta_meta", "se_meta", "pval_meta")) %>%
+  filter(pos %in% mv_instrument_annotations$pos) %>%
+  right_join(mv_instrument_annotations %>%
+    select(chr, pos, SNP = name) %>%
+    unique()) %>%
+  mutate(Phenotype = "SBP") %>%
+  format_data(
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta_meta",
+    se_col = "se_meta",
+    pval_col = "pval_meta",
+    eaf = "af_meta",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    chr_col = "chr",
+    pos_col = "pos"
+  )
+
+map_outcome_mvmr <- vroom("Data/continuous-MAP-both_sexes-combined_medadj_raw.tsv.bgz", col_select = c("chr", "pos", "ref", "alt", "af_meta", "beta_meta", "se_meta", "pval_meta")) %>%
+  filter(pos %in% mv_instrument_annotations$pos) %>%
+  right_join(mv_instrument_annotations %>%
+    select(chr, pos, SNP = name) %>%
+    unique()) %>%
+  mutate(Phenotype = "MAP") %>%
+  format_data(
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta_meta",
+    se_col = "se_meta",
+    pval_col = "pval_meta",
+    eaf = "af_meta",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    chr_col = "chr",
+    pos_col = "pos"
+  )
+
+pp_outcome_mvmr <- vroom("Data/continuous-PP-both_sexes-combined_medadj_raw.tsv.bgz", col_select = c("chr", "pos", "ref", "alt", "af_meta", "beta_meta", "se_meta", "pval_meta")) %>%
+  filter(pos %in% mv_instrument_annotations$pos) %>%
+  right_join(mv_instrument_annotations %>%
+    select(chr, pos, SNP = name) %>%
+    unique()) %>%
+  mutate(Phenotype = "PP") %>%
+  format_data(
+    type = "outcome",
+    snp_col = "SNP",
+    beta_col = "beta_meta",
+    se_col = "se_meta",
+    pval_col = "pval_meta",
+    eaf = "af_meta",
+    effect_allele_col = "alt",
+    other_allele_col = "ref",
+    chr_col = "chr",
+    pos_col = "pos"
+  )
+```
+
+```{r}
+mvmr_bp_res <- mv_instruments %>%
+  crossing(outcome = list(dbp_outcome_mvmr, sbp_outcome_mvmr, map_outcome_mvmr, pp_outcome_mvmr)) %>%
+  mutate(harmonized = map2(instrument, outcome, ~mv_harmonise_data(exposure_dat = .x, outcome_dat = .y))) %>%
+  mutate(mvmr_res = map(harmonized, mv_multiple))
+```
+
+## Results
+```{r}
+mvmr_bp_res %>%
+  select(bcaa, adjustment, mvmr_res) %>%
+  unnest(mvmr_res) %>%
+  unnest(mvmr_res) %>%
+  filter(id.exposure %in% c("met-c-873", "met-c-897", "met-c-940")) %>%
+  generate_odds_ratios() %>%
+  select(-starts_with("or")) %>%
+  DT::datatable(
+  extensions = c("Buttons"),
+  options = list(dom = "Bfrtip",
+                 buttons = c("copy", "csv")))
+```
+
+### Diabetes-adjusted
+```{r fig.height=5, fig.width=18}
+mvmr_bp_res %>%
+  select(bcaa, adjustment, mvmr_res) %>%
+  unnest(mvmr_res) %>%
+  unnest(mvmr_res) %>%
+  filter(id.exposure %in% c("met-c-873", "met-c-897", "met-c-940")) %>%
+  filter(adjustment == "ebi-a-GCST006867") %>%
+  split_exposure() %>%
+  generate_odds_ratios() %>%
+  select(-starts_with("or")) %>%
+  mutate(outcome = fct_relevel(outcome, "SBP", "DBP", "MAP", "PP")) %>%
+  arrange(desc(exposure)) %>%
+  plot_forest(width_ratio = c(1, 1, 3, 2), cols_left = vars("Exposure" = exposure, "Outcome" = outcome), effect = b, effect_signif = 3, ci_signif = 3, ci_lower = lo_ci, ci_upper = up_ci, p_value = pval, xmin = min(c(1,.$lo_ci)), xmax = max(c(1,.$up_ci)), style = "Beta", hline = 0, font_size = 20)
+```
+
+### BMI-adjusted
+```{r fig.height=5, fig.width=18}
+mvmr_bp_res %>%
+  select(bcaa, adjustment, mvmr_res) %>%
+  unnest(mvmr_res) %>%
+  unnest(mvmr_res) %>%
+  filter(id.exposure %in% c("met-c-873", "met-c-897", "met-c-940")) %>%
+  filter(adjustment != "ebi-a-GCST006867") %>%
+  split_exposure() %>%
+  generate_odds_ratios() %>%
+  select(-starts_with("or")) %>%
+  mutate(outcome = fct_relevel(outcome, "SBP", "DBP", "MAP", "PP")) %>%
+  arrange(desc(exposure)) %>%
+  plot_forest(width_ratio = c(1, 1, 3, 2), cols_left = vars("Exposure" = exposure, "Outcome" = outcome), effect = b, effect_signif = 3, ci_signif = 3, ci_lower = lo_ci, ci_upper = up_ci, p_value = pval, xmin = min(c(1,.$lo_ci)), xmax = max(c(1,.$up_ci)), style = "Beta", hline = 0, font_size = 20)
+```
+
+# BCAA Pathway Enrichment
+
+## Methods
+
+To test enrichment of independent (r^2^ = 0.001, distance = 10,000kb, p \< 5x10^-8^) BCAA-associated loci identified in either Kettunen, et. al.,[@kettunen2016] or the UK Biobank metabolite GWAS, SNPsnap was used to identify 10,000 matched SNPs from across the genome for each lead BCAA-associated SNP based on allele frequency, number of SNPs in LD, distance to nearest gene, and gene density.[@Pers2015] The number of BCAA-associated variants located within 500kb of BCAA-pathway genes was compared to the null baseline established across 10,000 permutations of matched SNPs to yield an empirical one-tailed p-value.
+
+```{r}
+#| echo: false
+bcaa_variants <- bcaa_exposure %>%
+  distinct(SNP) %>%
+  clump_data() %>%
+  pull(SNP)
+
+# bcaa_variants %>%
+# cat(sp="\n")
+```
+
+```{r}
+bcaa_genes <- tibble::tribble(
+                ~gene,
+                  "SLC25A44",
+                  "BCAT1",
+                  "BCAT2",
+                  "BCKDK",
+                  "PPM1K",
+                 "BCKDHB",
+                 "BCKDHA",
+                    "DBT",
+                    "IVD",
+                 "HIBADH",
+                  "HIBCH",
+                  "MCCC1",
+                    "AUH",
+                  "ACAD8"
+                ) 
+
+snp_mart <- biomaRt::useMart(biomart = "ENSEMBL_MART_ENSEMBL", 
+               host = "https://grch37.ensembl.org",
+               dataset = "hsapiens_gene_ensembl")
+
+bcaa_pathway_coordinates <- biomaRt::getBM(attributes = c('hgnc_symbol', 'chromosome_name', 'start_position', 'end_position'), 
+              filters = c('hgnc_symbol'), 
+              values = list(bcaa_genes$gene), 
+              mart = snp_mart) %>%
+  filter(chromosome_name %in% 1:22) %>%
+  type_convert() %>%
+  filter(!is.na(hgnc_symbol))
+
+bcaa_pathway_coordinates %>%
+  gt::gt() %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  )
+```
+
+```{r}
+bcaa_snpsnap <- data.table::fread("Data/SNPsnap_BCAA_snps_clump/matched_snps.txt")
+
+bcaa_snpsnap_long <- bcaa_snpsnap %>%
+  pivot_longer(-Input_SNP, names_to = "Set", values_to = "chr_pos") %>%
+  separate(chr_pos, into = c("chr", "pos"), sep = ":", convert = TRUE)
+
+plan(multisession)
+snpsnap_permutations <- bcaa_snpsnap_long %>%
+  group_nest(Set) %>%
+  # head(100) %>%
+  mutate(cm_genes = future_map_int(data, function(df) {
+    df %>% left_join(bcaa_pathway_coordinates %>%
+                       select(hgnc_symbol, chr = chromosome_name, start_position, end_position)) %>%
+      mutate(start_position = start_position - 500000,
+             end_position = end_position + 500000) %>%
+  drop_na() %>%
+  filter(between(pos, start_position, end_position)) %>%
+      nrow()
+  })) %>%
+  select(-data)
+```
+
+## Results
+
+```{r}
+bcaa_snp_enriched <- bcaa_exposure %>%
+  filter(SNP %in% bcaa_variants) %>%
+  select(SNP, chr = chr.exposure, pos = pos.exposure) %>%
+  type_convert() %>%
+  left_join(bcaa_pathway_coordinates %>%
+                       select(hgnc_symbol, chr = chromosome_name, start_position, end_position)) %>%
+      mutate(start_position = start_position - 500000,
+             end_position = end_position + 500000) %>%
+  drop_na() %>%
+  filter(between(pos, start_position, end_position))
+```
+
+```{r}
+snpsnap_permutations %>%
+  ggplot(aes(cm_genes)) +
+  geom_density(adjust = 8) + 
+  geom_vline(xintercept = bcaa_snp_enriched %>% nrow(), linetype = "dashed", color = "red") +
+  scale_x_continuous(breaks = scales::pretty_breaks()) +
+  labs(x = "Number of Variants +/- 500kb of BCAA Genes") +
+  xlim(0, bcaa_snp_enriched %>% nrow() + 1)
+```
+
+Of the 26 GWS loci associated with any BCAA trait (Leu, Ile, Val, total BCAA), `r nrow(bcaa_snp_enriched)` were located within +/- 500kb of BCAA-pathway genes, representing significant enrichment compared to matched control loci (one-tailed permutation p \< 1 x 10^-4^).
+
+# Restrictive Mendelian Randomization
+
+## Exposures
+
+-   UK Biobank - Isoleucine, Leucine, Valine, Total concentration of BCAA; Metabolites were transformed using rank-based inverse normal transformation prior to analyses. We adjusted association analyses by sex, array and fasting time. We used BOLT-LMM (linear mixed model) to account for both relatedness and population stratification
+
+-   Isoleucine, Leucine, Valine - Kettunen et. al.[@kettunen2016]
+
+## Outcomes
+
+-   UK Biobank [(https://pan.ukbb.broadinstitute.org/)](https://pan.ukbb.broadinstitute.org/) - Systolic BP (SBP), Diastolic BP (DBP), Pulse Pressure (PP), Mean Arterial Pressure (MAP)
+
+-   International Consortium on Blood Pressure (ICBP) + UK Biobank[@evangelou2018] - SBP, DBP
+
+## Methods
+
+Genetic variants associated with BCAA (isoleuceine, leucine, and valine) were identified from NMR metabolomics analysis from Kettunen et. al.[@kettunen2016]. Instruments were restricted to SNPs located +/- 500kb of genes involved in BCAA catabolism. Inverse variance-weighted (or Wald-ratio MR if only 1 SNP available) MR was performed to test the association between circulating BCAA and SBP, DBP, MAP, and PP assessed among transancestry participants of UK Biobank.
+
+```{r}
+bcaa_bp_harmonized_restricted <- bcaa_bp_harmonized %>%
+  mutate(chr = chr.exposure) %>%
+  type_convert() %>%
+  left_join(bcaa_pathway_coordinates %>%
+                       select(hgnc_symbol, chr = chromosome_name, start_position, end_position)) %>%
+      mutate(start_position = start_position - 500000,
+             end_position = end_position + 500000) %>%
+  filter(between(pos.exposure, start_position, end_position)) %>%
+  filter(!is.na(hgnc_symbol))
+
+# bcaa_bp_harmonized_restricted %>%
+#   distinct(exposure, outcome, SNP, .keep_all = TRUE)
+
+mr_res_bcaa_bp_restricted <- mr(bcaa_bp_harmonized_restricted, method_list = c("mr_ivw", "mr_weighted_median", "mr_weighted_mode", "mr_wald_ratio")) %>%
+  generate_odds_ratios() %>%
+  left_join(mr_pleiotropy_test(bcaa_bp_harmonized_restricted), by = c("id.exposure", "id.outcome", "outcome", "exposure"), suffix = c(".mr", ".pleiotropy")) %>%
+  mutate(ci_range = glue("{round(or_lci95, 2)}-{round(or_uci95, 2)}")) %>%
+  mutate(exposure_source = case_when(
+    str_detect(id.exposure, "met-c") ~ "Kettunen",
+    TRUE ~ "UKB"
+  )) %>%
+  mutate(outcome_source = case_when(
+    str_detect(id.outcome, "ieu") ~ "ICBP+UKB",
+    TRUE ~ "UKB"
+  )) %>%
+  mutate(outcome = case_when(str_detect(outcome, "systolic") ~ "SBP",
+                             str_detect(outcome, "diastolic") ~ "DBP",
+                             TRUE ~ outcome)) %>%
+  split_exposure() %>%
+  split_outcome() %>%
+  mutate(exposure = case_when(
+    str_detect(exposure, "Total concentration") ~ "Total BCAA",
+    TRUE ~ exposure
+  )) %>%
+  mutate(exposure = fct_relevel(exposure, "Total BCAA", after = Inf))
+```
+
+## Results
+
+### Instrument Strength
+
+```{r}
+bcaa_bp_harmonized_restricted %>%
+  # mutate(outcome = case_when(str_detect(outcome, "systolic") ~ "SBP",
+  #                            TRUE ~ "DBP")) %>%
+  split_exposure() %>%
+  split_outcome() %>%
+  mutate(exposure_source = case_when(
+    str_detect(id.exposure, "met-c") ~ "Kettunen",
+    TRUE ~ "UKB"
+  )) %>%
+  mutate(outcome_source = case_when(
+    str_detect(id.outcome, "ieu") ~ "ICBP+UKB",
+    TRUE ~ "UKB"
+  )) %>%
+  mutate(outcome = case_when(str_detect(outcome, "systolic") ~ "SBP",
+                             str_detect(outcome, "diastolic") ~ "DBP",
+                             TRUE ~ outcome)) %>%
+  split_exposure() %>%
+  split_outcome() %>%
+  mutate(exposure = case_when(
+    str_detect(exposure, "Total concentration") ~ "Total BCAA",
+    TRUE ~ exposure
+  )) %>%
+  mutate(exposure = fct_relevel(exposure, "Total BCAA", after = Inf)) %>%
+  filter(mr_keep) %>%
+  mutate(f_statistic = beta.exposure^2/se.exposure^2) %>%
+  group_by(exposure, exposure_source, outcome, outcome_source) %>%
+  summarize(n_snp = n(), 
+            f_statistic_mean = mean(f_statistic),
+            f_statistic_range = glue("{round(min(f_statistic), 2)} - {round(max(f_statistic), 2)}"), 
+            .groups = "drop") %>%
+  gt::gt() %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  )
+```
+
+### MR Results Table
+
+```{r}
+mr_res_bcaa_bp_restricted %>%
+  select(exposure, exposure_source, outcome, outcome_source, method, b, se.mr, lo_ci, up_ci, pval.mr) %>%
+    DT::datatable(
+  extensions = c("Buttons"),
+  options = list(dom = "Bfrtip",
+                 buttons = c("copy", "csv")))
+```
+
+### IVW Plot
+
+Genetic instruments for BCAA derived from Kettunen et. al., restricted to variants +/- 500kb from BCAA-catabolism genes, BP SNPs derived from UKB (transancestry)
+
+```{r fig.height=5, fig.width=18}
+mr_ivw_plot_restricted <- mr_res_bcaa_bp_restricted %>%
+  filter(str_detect(method, "variance|Wald")) %>%
+  filter(str_detect(exposure_source, "Kettunen")) %>%
+  filter(!str_detect(outcome_source, "ICBP")) %>%
+  mutate(outcome = fct_relevel(outcome, "SBP", "DBP", "MAP", "PP")) %>%
+  arrange(desc(exposure)) %>%
+  plot_forest(width_ratio = c(1, 1, 3, 2), cols_left = vars("Exposure" = exposure, "Outcome" = outcome), effect = b, effect_signif = 3, ci_signif = 3, ci_lower = lo_ci, ci_upper = up_ci, p_value = pval.mr, xmin = min(c(0,.$lo_ci)), xmax = max(c(0,.$up_ci)), style = "Beta", hline = 0, font_size = 20)
+
+mr_ivw_plot_restricted
+```
