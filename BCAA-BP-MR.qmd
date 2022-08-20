@@ -21,6 +21,7 @@ bibliography: references.bib
 
 ```{r setup}
 #| include: false
+#| cache: false
 
 # install any required packages from the renv.lock file
 if (!requireNamespace("renv", quietly = TRUE)) install.packages("renv")
@@ -228,6 +229,8 @@ bcaa_bp_harmonized %>%
 ### MR Results Table
 
 ```{r}
+#| cache: false
+
 mr_res_bcaa_bp_annotated %>%
   # mutate(source = case_when(str_detect(exposure, "met-c") ~ "Kettunen",
   #                           TRUE ~ "UKB"))  %>% 
@@ -283,6 +286,8 @@ mr_res_bcaa_bp_annotated %>%
 ### Heterogeneity
 
 ```{r}
+#| cache: false
+
 mr_heterogeneity(bcaa_bp_harmonized) %>%
   DT::datatable(
   extensions = c("Buttons"),
@@ -407,6 +412,8 @@ mvmr_bp_res <- mv_instruments %>%
 
 ## Results
 ```{r}
+#| cache: false
+
 mvmr_bp_res %>%
   select(bcaa, adjustment, mvmr_res) %>%
   unnest(mvmr_res) %>%
@@ -659,6 +666,8 @@ bcaa_bp_harmonized_restricted %>%
 ### MR Results Table
 
 ```{r}
+#| cache: false
+
 mr_res_bcaa_bp_restricted %>%
   select(exposure, exposure_source, outcome, outcome_source, method, b, se.mr, lo_ci, up_ci, pval.mr) %>%
     DT::datatable(
