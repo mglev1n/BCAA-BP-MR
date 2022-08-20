@@ -1,6 +1,7 @@
 # Circulating Branch-Chain Amino Acids and Blood Pressure: A Mendelian Randomization Study
 
 <!-- badges: start -->
+[![DOI](https://zenodo.org/badge/526956601.svg)](https://zenodo.org/badge/latestdoi/526956601)
 <!-- badges: end -->
 
 This repository contains R code to reproduce Mendelian randomization analyses evaluating the relationship between branch-chain amino acids and blood pressure. The results of these analyses are published as part of:
