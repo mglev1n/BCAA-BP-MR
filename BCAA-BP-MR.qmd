@@ -1,6 +1,8 @@
 ---
 title: "Circulating Branch-Chain Amino Acids and Blood Pressure: A Mendelian Randomization Study"
-author: Michael Levin, MD
+author: 
+  - name: Michael Levin, MD
+    orcid: 0000-0002-9937-9932
 format:
   html:
     code-tools: true
